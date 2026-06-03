@@ -8,6 +8,10 @@ VENV_PYTHON = VENV_DIR / "bin" / "python3"
 
 
 def download_as_mp3(url: str, output_dir: str = "downloads") -> Path | None:
+    """Standalone CLI use only — not called by the web app.
+
+    Downloads audio from a YouTube URL as MP3 using yt-dlp.
+    """
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -33,6 +37,10 @@ def download_as_mp3(url: str, output_dir: str = "downloads") -> Path | None:
 
 
 def main():
+    """Standalone CLI use only — not called by the web app.
+
+    Parses command-line arguments and downloads each URL.
+    """
     if len(sys.argv) < 2:
         print("Usage: python yt_downloader.py <youtube-url> [more-urls...]")
         sys.exit(1)

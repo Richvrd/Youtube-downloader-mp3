@@ -15,6 +15,8 @@ cd Youtube-downloader-mp3
 ./install.sh
 ```
 
+`install.sh` crea un entorno virtual e instala las dependencias listadas en `requirements.txt`.
+
 ## Uso
 
 ```bash
@@ -22,8 +24,8 @@ cd Youtube-downloader-mp3
 # Abrir http://localhost:8000
 ```
 
-Pega una o mas URLs de YouTube (una por linea) y presiona "Agregar".  
-Cuando la descarga termine, haz clic en "Descargar" para obtener el MP3 individual o "Descargar todo (ZIP)" para descargar todos en un archivo comprimido.
+Pega una URL de YouTube, presiona "Add" y espera a que la descarga termine.  
+Usa "Download MP3" para obtener el archivo individual o "Download all (ZIP)" para descargar todos los completados.
 
 ## Portabilidad
 
