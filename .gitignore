@@ -1,0 +1,4 @@
+yt-downloader-env/
+.dl_cache/
+__pycache__/
+*.pyc

@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube MP3 Downloader</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>YouTube MP3 Downloader</h1>
+        <p class="subtitle">Pega URLs de YouTube, las descargamos a MP3 al instante</p>
+
+        <div class="add-section">
+            <textarea id="urls-input" placeholder="Pega una o mas URLs de YouTube (una por linea)...&#10;Ctrl+Enter para agregar"></textarea>
+            <div class="add-row">
+                <button id="add-btn">Agregar</button>
+                <span id="url-count" class="url-count"></span>
+            </div>
+        </div>
+
+        <div class="stats">
+            <span>Pendientes: <span id="stats-pending" class="num">0</span></span>
+            <span>Descargando: <span id="stats-downloading" class="num">0</span></span>
+            <span>Completados: <span id="stats-completed" class="num">0</span></span>
+            <span>Errores: <span id="stats-errors" class="num">0</span></span>
+            <button id="clear-btn" class="btn-danger">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="3 6 5 6 21 6"/>
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                </svg>
+                Vaciar lista
+            </button>
+            <button id="download-all">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="7 10 12 15 17 10"/>
+                    <line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+                Descargar todo (ZIP)
+            </button>
+        </div>
+
+        <div class="queue-section">
+            <table id="queue-table">
+                <thead>
+                    <tr>
+                        <th class="col-num">#</th>
+                        <th class="col-title">Nombre</th>
+                        <th class="col-status">Estado</th>
+                        <th class="col-action">Accion</th>
+                    </tr>
+                </thead>
+                <tbody id="queue-body"></tbody>
+            </table>
+            <p id="empty-msg" class="empty">No hay descargas aun. Pega URLs arriba para empezar.</p>
+        </div>
+    </div>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>
