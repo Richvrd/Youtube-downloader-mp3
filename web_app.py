@@ -2,17 +2,21 @@ import sys
 import os
 import io
 import re
+import json
 import uuid
+import time
 import zipfile
+import logging
 import subprocess
 import threading
 import unicodedata
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
+from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -24,16 +28,24 @@ DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 sys.path.insert(0, str(BASE_DIR))
 from yt_downloader import VENV_PYTHON
 
+logger = logging.getLogger("ytd")
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+
 
 class DownloadStatus(str, Enum):
     PENDING = "pending"
     DOWNLOADING = "downloading"
     COMPLETED = "completed"
     ERROR = "error"
+    EXPIRED = "expired"
 
 
 class AddRequest(BaseModel):
     url: str
+    quality: str = "192"
+    trim_start: str = ""
+    trim_end: str = ""
+    mode: str = "mp3"
 
 
 class DownloadItem(BaseModel):
@@ -44,6 +56,11 @@ class DownloadItem(BaseModel):
     progress: int = 0
     filename: str = ""
     error: str = ""
+    quality: str = "192"
+    trim_start: str = ""
+    trim_end: str = ""
+    mode: str = "mp3"
+    playlist_id: str = ""
 
 
 downloads: dict[str, DownloadItem] = {}
@@ -52,6 +69,9 @@ executor = ThreadPoolExecutor(max_workers=3)
 
 PROGRESS_RE = re.compile(r"\[download\]\s+(\d+\.?\d*)%")
 ALLOWED_HOSTS = {"youtube.com", "www.youtube.com", "youtu.be", "music.youtube.com"}
+VALID_QUALITIES = {"128", "192", "320"}
+MAX_FILE_AGE_MINUTES = int(os.environ.get("YT_DL_MAX_AGE_MINUTES", "60"))
+YT_DL_PIN = os.environ.get("YT_DL_PIN", "")
 
 
 def validate_youtube_url(url: str) -> bool:
@@ -68,20 +88,91 @@ def sanitize_filename(name: str) -> str:
     return name.strip()[:180]
 
 
-def _run_ytdlp(url: str, item_id: str) -> tuple[Path, str]:
+def parse_timecode(tc: str) -> int | None:
+    """Convert MM:SS or HH:MM:SS to total seconds. Returns None if invalid."""
+    parts = tc.strip().split(":")
+    if len(parts) == 2:
+        try:
+            return int(parts[0]) * 60 + int(parts[1])
+        except ValueError:
+            return None
+    elif len(parts) == 3:
+        try:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+        except ValueError:
+            return None
+    return None
+
+
+def detect_playlist(url: str) -> bool:
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query)
+    return "list" in qs
+
+
+def extract_playlist_items(url: str) -> list[dict]:
+    cmd = [
+        str(VENV_PYTHON), "-m", "yt_dlp",
+        "--flat-playlist", "--dump-json",
+        "--no-download",
+        url,
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            return []
+        items = []
+        for line in result.stdout.strip().split("\n"):
+            if line:
+                data = json.loads(line)
+                items.append(data)
+        return items
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception):
+        return []
+
+
+def _run_ytdlp(url: str, item_id: str, quality: str = "192",
+               trim_start: str = "", trim_end: str = "",
+               mode: str = "mp3") -> tuple[Path, str]:
     tmp_dir = DOWNLOADS_DIR / f".tmp_{item_id}"
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
-    cmd = [
-        str(VENV_PYTHON), "-m", "yt_dlp",
-        "--extract-audio",
-        "--audio-format", "mp3",
-        "--audio-quality", "0",
+    ext = "mp4" if mode == "mp4" else "mp3"
+    cmd = [str(VENV_PYTHON), "-m", "yt_dlp"]
+
+    if mode == "mp4":
+        cmd.extend([
+            "--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        ])
+    else:
+        cmd.extend([
+            "--extract-audio",
+            "--audio-format", "mp3",
+            "--audio-quality", quality,
+        ])
+
+    if trim_start or trim_end:
+        section = "*"
+        if trim_start:
+            section += trim_start
+        section += "-"
+        if trim_end:
+            section += trim_end
+        cmd.extend(["--download-sections", section])
+
+    cmd.extend([
         "--print", "title",
         "--no-simulate",
         "-o", f"{tmp_dir}/%(title)s.%(ext)s",
         url,
-    ]
+    ])
+
+    if mode == "mp3":
+        cmd.extend([
+            "--embed-thumbnail",
+            "--add-metadata",
+            "--metadata-from-title", "%(artist)s - %(title)s",
+        ])
 
     process = subprocess.Popen(
         cmd,
@@ -126,9 +217,11 @@ def _run_ytdlp(url: str, item_id: str) -> tuple[Path, str]:
     if not title:
         raise RuntimeError("Could not get video title")
 
-    files = sorted(tmp_dir.glob("*.mp3"), key=os.path.getctime)
+    files = sorted(tmp_dir.glob(f"*.{ext}"), key=os.path.getctime)
     if not files:
-        raise RuntimeError("No MP3 file found")
+        files = sorted(tmp_dir.glob("*"), key=os.path.getctime)
+    if not files:
+        raise RuntimeError(f"No {ext} file found")
 
     mp3_path = files[-1]
     safe_name = sanitize_filename(mp3_path.name)
@@ -144,13 +237,21 @@ def _run_ytdlp(url: str, item_id: str) -> tuple[Path, str]:
     return dest, title
 
 
-def download_worker(item_id: str):
+def download_worker(item_id: str, quality: str = "192",
+                    trim_start: str = "", trim_end: str = "",
+                    mode: str = "mp3"):
     with lock:
         item = downloads[item_id]
         item.status = DownloadStatus.DOWNLOADING
 
     try:
-        mp3_path, title = _run_ytdlp(item.url, item_id)
+        mp3_path, title = _run_ytdlp(
+            item.url, item_id,
+            quality=quality,
+            trim_start=trim_start,
+            trim_end=trim_end,
+            mode=mode,
+        )
         with lock:
             item = downloads[item_id]
             item.title = title
@@ -159,21 +260,76 @@ def download_worker(item_id: str):
             item.status = DownloadStatus.COMPLETED
     except Exception as e:
         with lock:
-            downloads[item_id].status = DownloadStatus.ERROR
-            downloads[item_id].error = str(e)[:300]
+            item = downloads[item_id]
+            item.status = DownloadStatus.ERROR
+            item.error = str(e)[:300]
 
 
-def add_to_queue(url: str) -> DownloadItem:
+def add_to_queue(url: str, quality: str = "192",
+                 trim_start: str = "", trim_end: str = "",
+                 mode: str = "mp3",
+                 title: str = "", playlist_id: str = "") -> DownloadItem:
     item_id = uuid.uuid4().hex[:8]
-    item = DownloadItem(id=item_id, url=url)
+    item = DownloadItem(
+        id=item_id, url=url, quality=quality,
+        trim_start=trim_start, trim_end=trim_end,
+        mode=mode, title=title, playlist_id=playlist_id,
+    )
     with lock:
         downloads[item_id] = item
-    executor.submit(download_worker, item_id)
+    executor.submit(download_worker, item_id, quality, trim_start, trim_end, mode)
     return item
 
 
 app = FastAPI(title="YouTube MP3 Downloader")
 
+
+# --- PIN Middleware ---
+
+@app.middleware("http")
+async def pin_middleware(request: Request, call_next):
+    if not YT_DL_PIN:
+        return await call_next(request)
+
+    path = request.url.path
+    if path == "/" or path.startswith("/static"):
+        return await call_next(request)
+
+    if path.startswith("/api/"):
+        pin = request.headers.get("X-PIN", "") or request.query_params.get("pin", "")
+        if pin != YT_DL_PIN:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(status_code=401, content={"detail": "Invalid PIN"})
+
+    return await call_next(request)
+
+
+# --- Auto-cleanup Background Task ---
+
+def cleanup_loop():
+    while True:
+        time.sleep(300)
+        now = time.time()
+        cutoff = now - MAX_FILE_AGE_MINUTES * 60
+        for f in DOWNLOADS_DIR.iterdir():
+            if f.name.startswith("."):
+                continue
+            if f.is_file() and f.stat().st_mtime < cutoff:
+                f.unlink()
+                logger.info("[cleanup] Deleted expired file: %s", f.name)
+                with lock:
+                    for item in downloads.values():
+                        if item.filename == f.name and item.status in (
+                            DownloadStatus.COMPLETED, DownloadStatus.ERROR
+                        ):
+                            item.status = DownloadStatus.EXPIRED
+                            break
+
+cleanup_thread = threading.Thread(target=cleanup_loop, daemon=True)
+cleanup_thread.start()
+
+
+# --- Endpoints ---
 
 @app.post("/api/add")
 async def add_url(req: AddRequest):
@@ -182,7 +338,40 @@ async def add_url(req: AddRequest):
         raise HTTPException(400, "URL is empty")
     if not validate_youtube_url(url):
         raise HTTPException(400, "Invalid or unsupported URL. Only YouTube links are accepted.")
-    return add_to_queue(url)
+    if req.quality not in VALID_QUALITIES:
+        raise HTTPException(400, "Quality must be one of: 128, 192, 320")
+    if req.mode not in ("mp3", "mp4"):
+        raise HTTPException(400, "Mode must be mp3 or mp4")
+    if req.trim_start:
+        if parse_timecode(req.trim_start) is None:
+            raise HTTPException(400, "Invalid trim_start format. Use MM:SS or HH:MM:SS.")
+    if req.trim_end:
+        if parse_timecode(req.trim_end) is None:
+            raise HTTPException(400, "Invalid trim_end format. Use MM:SS or HH:MM:SS.")
+
+    if detect_playlist(url):
+        items = extract_playlist_items(url)
+        if items:
+            results = []
+            pl_id = uuid.uuid4().hex[:8]
+            for entry in items:
+                vurl = entry.get("webpage_url") or entry.get("url") or ""
+                vtitle = entry.get("title", "")
+                if vurl:
+                    item = add_to_queue(
+                        vurl, quality=req.quality,
+                        trim_start=req.trim_start, trim_end=req.trim_end,
+                        mode=req.mode, title=vtitle, playlist_id=pl_id,
+                    )
+                    results.append(item)
+            return {"playlist": True, "count": len(results), "items": results}
+
+    item = add_to_queue(
+        url, quality=req.quality,
+        trim_start=req.trim_start, trim_end=req.trim_end,
+        mode=req.mode,
+    )
+    return item
 
 
 @app.get("/api/queue")
@@ -220,6 +409,8 @@ async def delete_downloads():
         downloads.clear()
     for f in DOWNLOADS_DIR.glob("*.mp3"):
         f.unlink()
+    for f in DOWNLOADS_DIR.glob("*.mp4"):
+        f.unlink()
     for f in DOWNLOADS_DIR.glob("*.zip"):
         f.unlink()
     return {"ok": True}
@@ -232,6 +423,58 @@ async def status():
         for item in downloads.values():
             counts[item.status.value] += 1
     return {"ok": True, "queue": counts}
+
+
+@app.get("/api/preview")
+async def preview(url: str = ""):
+    if not url or not validate_youtube_url(url):
+        raise HTTPException(400, "Invalid or unsupported YouTube URL")
+
+    cmd = [
+        str(VENV_PYTHON), "-m", "yt_dlp",
+        "--dump-json", "--no-download",
+        url,
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr[:200])
+        data = json.loads(result.stdout.strip().split("\n")[0])
+
+        resp = {
+            "title": data.get("title", ""),
+            "duration": data.get("duration", 0),
+            "thumbnail": data.get("thumbnail", ""),
+            "channel": data.get("channel", "") or data.get("uploader", ""),
+            "view_count": data.get("view_count", 0),
+        }
+
+        if detect_playlist(url):
+            resp["is_playlist"] = True
+            qs = parse_qs(urlparse(url).query)
+            playlist_id = qs.get("list", [""])[0]
+            count_cmd = [
+                str(VENV_PYTHON), "-m", "yt_dlp",
+                "--flat-playlist", "--dump-json",
+                "--no-download", "--playlist-end", "1",
+                url,
+            ]
+            try:
+                count_result = subprocess.run(
+                    count_cmd, capture_output=True, text=True, timeout=10
+                )
+                if count_result.returncode == 0:
+                    lines = count_result.stdout.strip().split("\n")
+                    resp["playlist_count"] = len(lines)
+            except Exception:
+                pass
+
+        return resp
+
+    except subprocess.TimeoutExpired:
+        raise HTTPException(404, "Video info fetch timed out. Check the URL.")
+    except Exception as e:
+        raise HTTPException(404, f"Could not load video info: {str(e)[:100]}")
 
 
 @app.get("/api/download-all")
@@ -250,7 +493,6 @@ async def download_all():
             if file_path.exists():
                 zf.write(file_path, item.filename)
 
-    from datetime import datetime
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     zip_name = f"downloads_{timestamp}.zip"
 
@@ -267,9 +509,11 @@ async def download_file(filename: str):
     file_path = DOWNLOADS_DIR / filename
     if not file_path.exists():
         raise HTTPException(404, "File not found")
+    ext = Path(filename).suffix.lower()
+    mime = "video/mp4" if ext == ".mp4" else "audio/mpeg"
     return FileResponse(
         file_path,
-        media_type="audio/mpeg",
+        media_type=mime,
         filename=filename,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

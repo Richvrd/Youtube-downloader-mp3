@@ -3,53 +3,120 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>YTD — YouTube MP3 Downloader</title>
+    <title>YTD — YouTube Downloader</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <div class="app">
-        <header class="header">
+
+<div id="pin-screen" class="pin-screen hidden">
+    <div class="pin-box">
+        <h2 class="pin-title">YTD</h2>
+        <p class="pin-sub">Enter PIN to access the downloader</p>
+        <input type="password" id="pin-input" class="pin-input" placeholder="PIN" maxlength="20" autocomplete="off">
+        <button id="pin-unlock-btn" class="btn pin-btn">Unlock</button>
+        <p id="pin-error" class="pin-error"></p>
+    </div>
+</div>
+
+<div id="drop-overlay" class="drop-overlay hidden">
+    <div class="drop-content">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
+        <p>Drop YouTube URL here</p>
+    </div>
+</div>
+
+<div class="app">
+    <header class="header">
+        <div class="header-left">
             <h1 class="logo">YTD</h1>
-            <span class="logo-sub">YouTube MP3 Downloader</span>
-        </header>
+            <span class="logo-sub">YouTube Downloader</span>
+        </div>
+        <button id="theme-toggle" class="theme-toggle" title="Toggle theme">
+            <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+            </svg>
+            <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+            </svg>
+        </button>
+    </header>
 
-        <div class="input-section">
-            <div class="input-row">
+    <div class="input-section">
+        <div class="toolbar-row">
+            <div class="quality-selector" id="quality-selector">
+                <button class="qual-btn active" data-value="128">128</button>
+                <button class="qual-btn" data-value="192">192</button>
+                <button class="qual-btn" data-value="320">320</button>
+            </div>
+            <div class="mode-toggle" id="mode-toggle">
+                <button class="mode-btn active" data-value="mp3">MP3</button>
+                <button class="mode-btn" data-value="mp4">MP4</button>
+            </div>
+        </div>
+
+        <div class="input-row">
+            <div class="input-wrap">
                 <input type="text" id="url-input" placeholder="Paste a YouTube URL..." autocomplete="off" autocorrect="off" spellcheck="false">
-                <button id="add-btn">Add</button>
+                <div id="preview-spinner" class="preview-spinner hidden">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-dasharray="31.4 31.4" stroke-linecap="round"/></svg>
+                </div>
             </div>
-            <p class="input-hint">Supports youtube.com and youtu.be links</p>
-            <p id="validation-msg" class="validation-msg"></p>
+            <button id="add-btn" disabled>Add</button>
         </div>
+        <p class="input-hint">Supports youtube.com and youtu.be links</p>
+        <p id="validation-msg" class="validation-msg"></p>
 
-        <div class="queue-section" id="queue-section">
-            <div id="empty-state" class="empty-state">
-                <svg class="empty-icon" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M9 18V5l12-2v13"/>
-                    <circle cx="6" cy="18" r="3"/>
-                    <circle cx="18" cy="16" r="3"/>
-                </svg>
-                <p class="empty-title">No downloads yet</p>
-                <p class="empty-sub">Paste a YouTube URL above to get started</p>
-            </div>
-            <div id="queue-list" class="queue-list"></div>
+        <div id="preview-card" class="preview-card hidden"></div>
+
+        <div class="advanced-toggle" id="advanced-toggle">
+            <button class="adv-btn">Advanced options ▾</button>
         </div>
-
-        <div id="footer-bar" class="footer-bar hidden">
-            <div class="footer-left">
-                <span id="counter-text" class="counter-text">0 completed</span>
-            </div>
-            <div class="footer-right">
-                <button id="download-all-btn" class="btn btn-ghost" disabled>Download all (ZIP)</button>
-                <button id="clear-list-btn" class="btn btn-ghost btn-danger-text">Clear list</button>
-                <button id="delete-files-btn" class="btn btn-ghost btn-danger-text">Delete all files</button>
+        <div id="advanced-panel" class="advanced-panel hidden">
+            <div class="trim-row">
+                <div class="trim-field">
+                    <label>Start (optional)</label>
+                    <input type="text" id="trim-start" placeholder="00:00" maxlength="8">
+                </div>
+                <div class="trim-field">
+                    <label>End (optional)</label>
+                    <input type="text" id="trim-end" placeholder="00:00" maxlength="8">
+                </div>
             </div>
         </div>
     </div>
 
-    <script src="/static/app.js"></script>
+    <div class="queue-section" id="queue-section">
+        <div id="empty-state" class="empty-state">
+            <svg class="empty-icon" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 18V5l12-2v13"/>
+                <circle cx="6" cy="18" r="3"/>
+                <circle cx="18" cy="16" r="3"/>
+            </svg>
+            <p class="empty-title">No downloads yet</p>
+            <p class="empty-sub">Paste a YouTube URL above to get started</p>
+        </div>
+        <div id="queue-list" class="queue-list"></div>
+    </div>
+
+    <div id="footer-bar" class="footer-bar hidden">
+        <div class="footer-left">
+            <span id="counter-text" class="counter-text">0 completed</span>
+        </div>
+        <div class="footer-right">
+            <button id="download-all-btn" class="btn btn-ghost" disabled>Download all (ZIP)</button>
+            <button id="clear-list-btn" class="btn btn-ghost btn-danger-text">Clear list</button>
+            <button id="delete-files-btn" class="btn btn-ghost btn-danger-text">Delete all files</button>
+        </div>
+    </div>
+</div>
+
+<script src="/static/app.js"></script>
 </body>
 </html>
